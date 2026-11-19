@@ -1,0 +1,1202 @@
+<!DOCTYPE html>
+<html lang="he" dir="rtl">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>קשת הדרקונים - משחק Motion Capture בסגנון Pixel Art</title>
+  <!-- Tailwind CSS -->
+  <script src="https://cdn.tailwindcss.com"></script>
+  <!-- ספריות TensorFlow.js ו-Teachable Machine Pose -->
+  <script src="https://cdn.jsdelivr.net/npm/@tensorflow/tfjs@1.3.1/dist/tf.min.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/@teachablemachine/pose@0.8/dist/teachablemachine-pose.min.js"></script>
+  <!-- גופן רטרו לאנגלית/מספרים + גופן עברי חד ומרובע -->
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Press+Start+2P&family=Rubik:wght@600;800;900&display=swap" rel="stylesheet">
+  <style>
+    * {
+      font-family: 'Rubik', sans-serif;
+      user-select: none;
+    }
+    .font-pixel-en {
+      font-family: 'Press Start 2P', monospace;
+    }
+    body {
+      margin: 0;
+      overflow: hidden;
+      background-color: #14182e;
+    }
+    #gameCanvas {
+      display: block;
+      width: 100%;
+      height: 100%;
+      image-rendering: pixelated;
+      image-rendering: crisp-edges;
+    }
+    /* מסגרת פיקסל ארט 16-ביט לממשק */
+    .pixel-box {
+      background-color: #1e223d;
+      border: 4px solid #ffffff;
+      box-shadow:
+        0 0 0 4px #0b0d1a,
+        inset -4px -4px 0px #121528,
+        inset 4px 4px 0px #323963;
+    }
+    .pixel-btn {
+      background-color: #f59e0b;
+      color: #0b0d1a;
+      border: 3px solid #ffffff;
+      box-shadow:
+        0 4px 0 #92400e,
+        0 0 0 3px #0b0d1a,
+        inset 2px 2px 0 #fde68a;
+      transition: transform 0.08s steps(2);
+    }
+    .pixel-btn:hover {
+      background-color: #fbbf24;
+      transform: translateY(-2px);
+    }
+    .pixel-btn:active {
+      transform: translateY(2px);
+      box-shadow:
+        0 1px 0 #92400e,
+        0 0 0 3px #0b0d1a;
+    }
+    .pixel-btn-secondary {
+      background-color: #334155;
+      color: #f8fafc;
+      border: 3px solid #94a3b8;
+      box-shadow:
+        0 3px 0 #0f172a,
+        0 0 0 2px #0b0d1a;
+    }
+    .pixel-btn-secondary:hover {
+      background-color: #475569;
+    }
+  </style>
+</head>
+<body class="w-screen h-screen relative text-white">
+
+  <!-- קנבס המשחק הראשי -->
+  <canvas id="gameCanvas"></canvas>
+
+  <!-- חלונית מצלמת רשת קומפקטית בפינה השמאלית העליונה (לא מסתירה דרקונים!) -->
+  <div style="top: 12px; left: 12px; width: 156px;" class="fixed z-20 pixel-box p-1.5">
+    <div class="flex items-center justify-between mb-1 px-0.5">
+      <span class="text-[10px] font-extrabold text-sky-300 flex items-center gap-1">
+        <span id="aiStatusDot" class="w-2 h-2 bg-amber-400 inline-block"></span>
+        <span id="aiStatusText">טוען AI</span>
+      </span>
+      <span id="detectedPoseLabel" class="text-[10px] font-extrabold text-amber-300 truncate max-w-[70px]">--</span>
+    </div>
+
+    <!-- תצוגת מצלמה + שלד מוקטנת -->
+    <div class="relative w-full aspect-square bg-slate-950 border-2 border-slate-700 overflow-hidden">
+      <canvas id="webcamCanvas" class="w-full h-full object-cover"></canvas>
+      <div id="webcamPlaceholder" class="absolute inset-0 flex flex-col items-center justify-center text-center p-1 text-[10px] text-slate-400">
+        <span class="text-base">📷</span>
+        <span>מצלמה כבויה</span>
+      </div>
+    </div>
+
+    <!-- מדי ביטחון מיניאטוריים -->
+    <div id="confidenceBars" class="mt-1.5 space-y-1 text-[9px] leading-none"></div>
+  </div>
+
+  <!-- סרגל עליון (HUD) - מיושר לימין ולמרכז כדי להשאיר את הפינה השמאלית פנויה לחלונית המצלמה -->
+  <div class="fixed top-3 right-3 left-[180px] flex flex-wrap items-center justify-between gap-2 pointer-events-none z-10">
+
+    <!-- ניקוד, שלב ולבבות -->
+    <div class="pixel-box px-3 py-2 flex items-center gap-3 pointer-events-auto">
+      <div class="flex items-center gap-1 text-base sm:text-xl" id="heartsDisplay" title="חיים שנותרו">
+        ❤️❤️❤️
+      </div>
+      <div class="h-5 w-1 bg-slate-600"></div>
+      <div class="text-xs sm:text-sm font-extrabold">
+        <span class="text-slate-300">ניקוד:</span>
+        <span id="scoreDisplay" class="font-pixel-en text-amber-400 text-xs sm:text-sm mr-1">0</span>
+      </div>
+      <div class="h-5 w-1 bg-slate-600"></div>
+      <div class="text-xs sm:text-sm font-extrabold">
+        <span class="text-slate-300">גל:</span>
+        <span id="levelDisplay" class="font-pixel-en text-sky-400 text-xs sm:text-sm mr-1">1</span>
+      </div>
+    </div>
+
+    <!-- חיווי מצב טעינת החץ -->
+    <div id="reloadBadge" class="px-4 py-2 font-extrabold text-xs sm:text-sm border-4 border-white shadow-[0_0_0_3px_#0b0d1a] bg-emerald-600 text-white">
+      🏹 חץ מוכן! הרם יד לירי
+    </div>
+
+    <!-- כפתורי שליטה מהירים -->
+    <div class="flex items-center gap-2 pointer-events-auto">
+      <button id="toggleMappingBtn" class="pixel-btn-secondary px-2.5 py-1.5 text-xs font-extrabold cursor-pointer" title="התאמת שמות התנוחות של המודל">
+        ⚙️ מיפוי
+      </button>
+      <button id="keyboardModeBtn" class="pixel-btn-secondary px-2.5 py-1.5 text-xs font-extrabold cursor-pointer" title="מצב בדיקה עם חצי המקלדת">
+        ⌨️ מקלדת: כבוי
+      </button>
+      <button id="muteBtn" class="pixel-btn-secondary px-2.5 py-1.5 text-xs font-extrabold cursor-pointer" title="השתק / הפעל צלילים">
+        🔊
+      </button>
+    </div>
+  </div>
+
+  <!-- חלונית קופצת להתאמת מיפוי תנוחות -->
+  <div id="mappingModal" class="hidden fixed inset-0 bg-black/75 z-30 flex items-center justify-center p-4">
+    <div class="pixel-box max-w-md w-full p-6">
+      <h3 class="text-lg font-extrabold text-amber-400 mb-2">⚙️ התאמת מחלקות המודל</h3>
+      <p class="text-xs text-slate-300 mb-4 leading-relaxed">
+        המערכת מזהה אוטומטית את שמות התנוחות מתוך Teachable Machine. אם כיוון הידיים הפוך בגלל אפקט מראה, ניתן להחליף כאן:
+      </p>
+      <div class="space-y-3 text-sm">
+        <div>
+          <label class="block text-slate-300 text-xs font-bold mb-1">ירי לצד ימין (הרמת יד ימין):</label>
+          <select id="mapRightSelect" class="w-full bg-slate-900 border-2 border-slate-500 p-2 text-white text-xs"></select>
+        </div>
+        <div>
+          <label class="block text-slate-300 text-xs font-bold mb-1">ירי לצד שמאל (הרמת יד שמאל):</label>
+          <select id="mapLeftSelect" class="w-full bg-slate-900 border-2 border-slate-500 p-2 text-white text-xs"></select>
+        </div>
+        <div>
+          <label class="block text-slate-300 text-xs font-bold mb-1">מצב נייטרלי (הורדת ידיים לטעינת חץ):</label>
+          <select id="mapNeutralSelect" class="w-full bg-slate-900 border-2 border-slate-500 p-2 text-white text-xs"></select>
+        </div>
+      </div>
+      <div class="mt-5 flex justify-end">
+        <button id="closeMappingBtn" class="pixel-btn px-5 py-2 font-extrabold text-sm cursor-pointer">שמור וסגור</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- מסך פתיחה והוראות בסגנון Pixel Art -->
+  <div id="startOverlay" class="fixed inset-0 bg-slate-950/85 z-20 flex items-center justify-center p-4">
+    <div class="pixel-box max-w-lg w-full p-6 sm:p-7 text-center">
+      <div class="font-pixel-en text-amber-400 text-xs sm:text-sm mb-2 tracking-wider">DRAGON ARCHER 16-BIT</div>
+      <h1 class="text-3xl sm:text-4xl font-black text-white mb-2 drop-shadow-[0_4px_0_#92400e]">
+        🏹 קשת הדרקונים 🐉
+      </h1>
+      <p class="text-sky-300 text-xs sm:text-sm font-bold mb-5">
+        משחק Motion Capture מופעל בינה מלאכותית (Teachable Machine)
+      </p>
+
+      <div class="bg-slate-900/90 border-2 border-slate-600 p-4 text-right space-y-2.5 text-xs sm:text-sm mb-5">
+        <div class="flex items-center gap-2.5">
+          <span class="text-lg">🙋‍♂️</span>
+          <span><strong class="text-amber-300">הרם יד ימין:</strong> יורה חץ פיקסל לצד ימין!</span>
+        </div>
+        <div class="flex items-center gap-2.5">
+          <span class="text-lg">🙋‍♀️</span>
+          <span><strong class="text-amber-300">הרם יד שמאל:</strong> יורה חץ פיקסל לצד שמאל!</span>
+        </div>
+        <div class="flex items-center gap-2.5">
+          <span class="text-lg">⬇️</span>
+          <span><strong class="text-emerald-300">הורד ידיים למטה:</strong> חובה לחזור למצב נייטרלי כדי <strong>לטעון חץ חדש</strong>!</span>
+        </div>
+        <div class="flex items-center gap-2.5">
+          <span class="text-lg">❤️</span>
+          <span>יש לך <strong class="text-rose-400">3 לבבות</strong> – עצור את הדרקונים לפני שיגיעו למגדל!</span>
+        </div>
+      </div>
+
+      <div id="loadingMessage" class="hidden mb-4 text-amber-300 font-bold text-xs animate-pulse">
+        ⏳ מתחבר למצלמה וטוען את מודל הזיהוי מ-Teachable Machine...
+      </div>
+      <div id="errorMessage" class="hidden mb-4 bg-rose-950 border-2 border-rose-500 text-rose-200 p-3 text-xs"></div>
+
+      <div class="flex flex-col sm:flex-row gap-3 justify-center">
+        <button id="startBtn" class="pixel-btn px-6 py-3 font-extrabold text-base cursor-pointer">
+          🎥 הפעל מצלמה והתחל!
+        </button>
+        <button id="startKeyboardBtn" class="pixel-btn-secondary px-4 py-3 font-bold text-xs sm:text-sm cursor-pointer">
+          ⌨️ שחק עם מקלדת (חצים)
+        </button>
+      </div>
+    </div>
+  </div>
+
+  <!-- מסך סיום משחק (Game Over) -->
+  <div id="gameOverOverlay" class="hidden fixed inset-0 bg-slate-950/85 z-20 flex items-center justify-center p-4">
+    <div class="pixel-box max-w-md w-full p-6 text-center">
+      <div class="font-pixel-en text-rose-500 text-base mb-2">GAME OVER</div>
+      <h2 class="text-2xl sm:text-3xl font-black text-white mb-2">המגדל נכבש!</h2>
+      <p class="text-slate-300 text-xs mb-5">הדרקונים הצליחו להגיע אל הקשת שבמרכז.</p>
+
+      <div class="grid grid-cols-2 gap-3 bg-slate-900 border-2 border-slate-600 p-4 mb-6">
+        <div>
+          <div class="text-xs text-slate-400 mb-1">ניקוד סופי</div>
+          <div id="finalScore" class="font-pixel-en text-lg text-amber-400">0</div>
+        </div>
+        <div>
+          <div class="text-xs text-slate-400 mb-1">דרקונים שהובסו</div>
+          <div id="finalKills" class="font-pixel-en text-lg text-emerald-400">0</div>
+        </div>
+      </div>
+
+      <button id="restartBtn" class="pixel-btn w-full py-3 font-extrabold text-base cursor-pointer">
+        🔄 שחק שוב
+      </button>
+    </div>
+  </div>
+
+  <script>
+    // =========================================================================
+    // הגדרות מודל Teachable Machine Pose
+    // =========================================================================
+    const MODEL_BASE_URL = "https://teachablemachine.withgoogle.com/models/yaYgmyekd/";
+    const CONFIDENCE_THRESHOLD = 0.80;
+
+    let model = null;
+    let webcam = null;
+    let webcamCtx = null;
+    let maxPredictions = 0;
+    let classLabels = [];
+
+    let classMapping = {
+      right: 0,
+      left: 1,
+      neutral: 2
+    };
+
+    // =========================================================================
+    // סאונד רטרו 8-ביט (Web Audio API)
+    // =========================================================================
+    let audioCtx = null;
+    let isMuted = false;
+
+    function initAudio() {
+      if (!audioCtx) {
+        const AudioContext = window.AudioContext || window.webkitAudioContext;
+        if (AudioContext) audioCtx = new AudioContext();
+      }
+      if (audioCtx && audioCtx.state === 'suspended') {
+        audioCtx.resume();
+      }
+    }
+
+    function playSound(type) {
+      if (isMuted || !audioCtx) return;
+      try {
+        const now = audioCtx.currentTime;
+        const osc = audioCtx.createOscillator();
+        const gain = audioCtx.createGain();
+        osc.connect(gain);
+        gain.connect(audioCtx.destination);
+
+        if (type === 'shoot') {
+          osc.type = 'square';
+          osc.frequency.setValueAtTime(580, now);
+          osc.frequency.exponentialRampToValueAtTime(140, now + 0.14);
+          gain.gain.setValueAtTime(0.18, now);
+          gain.gain.exponentialRampToValueAtTime(0.01, now + 0.14);
+          osc.start(now);
+          osc.stop(now + 0.14);
+        } else if (type === 'reload') {
+          osc.type = 'square';
+          osc.frequency.setValueAtTime(440, now);
+          osc.frequency.setValueAtTime(660, now + 0.05);
+          gain.gain.setValueAtTime(0.12, now);
+          gain.gain.exponentialRampToValueAtTime(0.01, now + 0.12);
+          osc.start(now);
+          osc.stop(now + 0.12);
+        } else if (type === 'hit') {
+          osc.type = 'sawtooth';
+          osc.frequency.setValueAtTime(240, now);
+          osc.frequency.exponentialRampToValueAtTime(55, now + 0.22);
+          gain.gain.setValueAtTime(0.24, now);
+          gain.gain.exponentialRampToValueAtTime(0.01, now + 0.22);
+          osc.start(now);
+          osc.stop(now + 0.22);
+        } else if (type === 'hurt') {
+          osc.type = 'sawtooth';
+          osc.frequency.setValueAtTime(160, now);
+          osc.frequency.linearRampToValueAtTime(50, now + 0.35);
+          gain.gain.setValueAtTime(0.28, now);
+          gain.gain.exponentialRampToValueAtTime(0.01, now + 0.35);
+          osc.start(now);
+          osc.stop(now + 0.35);
+        }
+      } catch (e) {}
+    }
+
+    // =========================================================================
+    // ספרייטים ב-Pixel Art (מטריצות פיקסלים חדות)
+    // =========================================================================
+    const PIXEL_SCALE = 4; // גודל כל "פיקסל" על המסך
+
+    // פלטת צבעים לספרייטים
+    const PALETTE = {
+      '.': null,
+      'K': '#0f172a', // קו מתאר כהה
+      'G': '#10b981', // ירוק קשת
+      'D': '#047857', // ירוק כהה
+      'S': '#fde68a', // עור פנים
+      'P': '#f472b6', // לחיים ורודות
+      'W': '#ffffff', // לבן
+      'B': '#78350f', // חום עץ/מגפיים
+      'Y': '#facc15', // זהב / צהוב
+      'R': '#ef4444', // אדום דרקון
+      'M': '#991b1b', // אדום כהה כנפיים
+      'O': '#f97316', // כתום אש
+      'V': '#7c3aed', // סגול דרקון בוס
+      'L': '#ddd6fe', // בטן בהירה
+      'C': '#38bdf8'  // ראש חץ כחול זוהר
+    };
+
+    // קשת חמוד (16x18 פיקסלים, פונה ימינה)
+    const ARCHER_SPRITE = [
+      "....DDDD........",
+      "...DDDDDD.......",
+      "..DDDDDDDDD.....",
+      ".RRRRDDDDDDD....",
+      "..SSSSSSSSSS....",
+      "..SSSSKSSKSS....",
+      "..SSSSKSSKSS....",
+      "..SSSPSSSSPS....",
+      "...SSSSSSSS.....",
+      "..GGGGGGGGGG....",
+      ".DGGGGGGGGGGD...",
+      ".DGGGGYYGGGGD...",
+      ".DGGGGGGGGGGD...",
+      "..GGGGGGGGGG....",
+      "...BBB..BBB.....",
+      "...BBB..BBB....."
+    ];
+
+    // דרקון מפחיד - פריים 1 (כנפיים למעלה, פונה ימינה, 20x16)
+    const DRAGON_FRAME_1 = [
+      "...MM.........KK....",
+      "..MMMM.......KYYK...",
+      ".MMMMMM.....KRRRRK..",
+      ".MMMMMM....KRRRRRRK.",
+      "..MMMMM...KRRRYKRRRK",
+      "...MMMM..KRRRRRRRRRK",
+      "K...MMM.KRRRRRRRRWWK",
+      "KK...MMKRRRRRRRRWWWW",
+      "KRRK..KRRRRRRRRR....",
+      ".KRRKKRRRRRRRRROO...",
+      "..KRRRRRRRRRRROOOO..",
+      "...KRRRRLLLLRROO....",
+      "....KRRRLLLLRRK.....",
+      ".....KRRRRRRRK......",
+      "......KK...KK.......",
+      ".....KKK...KKK......"
+    ];
+
+    // דרקון מפחיד - פריים 2 (כנפיים למטה, פונה ימינה, 20x16)
+    const DRAGON_FRAME_2 = [
+      "..............KK....",
+      ".............KYYK...",
+      "............KRRRRK..",
+      "...........KRRRRRRK.",
+      "..........KRRRYKRRRK",
+      ".........KRRRRRRRRRK",
+      "K.......KRRRRRRRRWWK",
+      "KK...MMKRRRRRRRRWWWW",
+      "KRRKMMMMRRRRRRRR....",
+      ".KRRMMMMRRRRRRROO...",
+      "..KMMMMMRRRRRROOOO..",
+      "...MMMM.LLLLRROO....",
+      "....MM..LLLLRRK.....",
+      ".....KRRRRRRRK......",
+      "......KK...KK.......",
+      ".....KKK...KKK......"
+    ];
+
+    function drawPixelMatrix(ctx, matrix, centerX, centerY, scale, flipX = false, colorOverride = null) {
+      const rows = matrix.length;
+      const cols = matrix[0].length;
+      const totalW = cols * scale;
+      const totalH = rows * scale;
+
+      ctx.save();
+      ctx.translate(Math.round(centerX), Math.round(centerY));
+      if (flipX) ctx.scale(-1, 1);
+
+      const startX = -Math.floor(totalW / 2);
+      const startY = -Math.floor(totalH / 2);
+
+      for (let r = 0; r < rows; r++) {
+        const rowStr = matrix[r];
+        for (let c = 0; c < cols; c++) {
+          const ch = rowStr[c];
+          let color = PALETTE[ch];
+          if (!color) continue;
+          if (colorOverride && colorOverride[ch]) {
+            color = colorOverride[ch];
+          }
+          ctx.fillStyle = color;
+          ctx.fillRect(startX + c * scale, startY + r * scale, scale, scale);
+        }
+      }
+      ctx.restore();
+    }
+
+    // =========================================================================
+    // משתני מצב המשחק
+    // =========================================================================
+    const canvas = document.getElementById('gameCanvas');
+    const ctx = canvas.getContext('2d');
+
+    let gameState = 'START';
+    let keyboardMode = false;
+    let isWebcamRunning = false;
+
+    let score = 0;
+    let dragonsKilled = 0;
+    let level = 1;
+    let lives = 3;
+
+    let isArrowLoaded = true;
+    let archerFacing = 'right';
+    let archerRecoil = 0;
+    let screenShake = 0;
+    let damageFlash = 0;
+
+    let arrows = [];
+    let dragons = [];
+    let particles = [];
+    let floatingTexts = [];
+    let pixelStars = [];
+    let pixelClouds = [];
+
+    let lastTimestamp = 0;
+    let spawnTimer = 0;
+
+    function resizeCanvas() {
+      canvas.width = window.innerWidth;
+      canvas.height = window.innerHeight;
+      ctx.imageSmoothingEnabled = false;
+      generatePixelScenery();
+    }
+
+    function generatePixelScenery() {
+      pixelStars = [];
+      for (let i = 0; i < 40; i++) {
+        pixelStars.push({
+          x: Math.floor(Math.random() * (canvas.width / 4)) * 4,
+          y: Math.floor(Math.random() * ((canvas.height * 0.5) / 4)) * 4,
+          size: Math.random() > 0.7 ? 8 : 4
+        });
+      }
+      pixelClouds = [
+        { x: canvas.width * 0.18, y: canvas.height * 0.24 },
+        { x: canvas.width * 0.52, y: canvas.height * 0.18 },
+        { x: canvas.width * 0.84, y: canvas.height * 0.26 }
+      ];
+    }
+
+    window.addEventListener('resize', resizeCanvas);
+    resizeCanvas();
+
+    // =========================================================================
+    // Teachable Machine Pose & מצלמה
+    // =========================================================================
+    async function initTeachableMachine() {
+      const modelURL = MODEL_BASE_URL + "model.json";
+      const metadataURL = MODEL_BASE_URL + "metadata.json";
+
+      model = await tmPose.load(modelURL, metadataURL);
+      maxPredictions = model.getTotalClasses();
+      classLabels = model.getClassLabels();
+
+      autoDetectClassMapping(classLabels);
+      buildConfidenceUI(classLabels);
+      populateMappingSelectors(classLabels);
+
+      const size = 160;
+      const flip = true;
+      webcam = new tmPose.Webcam(size, size, flip);
+      await webcam.setup();
+      await webcam.play();
+      isWebcamRunning = true;
+
+      const webcamCanvas = document.getElementById('webcamCanvas');
+      webcamCanvas.width = size;
+      webcamCanvas.height = size;
+      webcamCtx = webcamCanvas.getContext('2d');
+      document.getElementById('webcamPlaceholder').classList.add('hidden');
+
+      document.getElementById('aiStatusDot').className = "w-2 h-2 bg-emerald-400 inline-block";
+      document.getElementById('aiStatusText').textContent = "AI פעיל";
+
+      window.requestAnimationFrame(posePredictionLoop);
+    }
+
+    function autoDetectClassMapping(labels) {
+      let rIdx = -1, lIdx = -1, nIdx = -1;
+      labels.forEach((lbl, idx) => {
+        const lower = lbl.toLowerCase();
+        if (lower.includes('right') || lower.includes('ימין')) rIdx = idx;
+        else if (lower.includes('left') || lower.includes('שמאל')) lIdx = idx;
+        else if (lower.includes('neutral') || lower.includes('none') || lower.includes('down') || lower.includes('רגיל') || lower.includes('נייטרלי') || lower.includes('למטה') || lower.includes('עמידה')) nIdx = idx;
+      });
+
+      if (rIdx === -1) rIdx = 0;
+      if (lIdx === -1) lIdx = labels.length > 1 ? 1 : 0;
+      if (nIdx === -1) nIdx = labels.length > 2 ? 2 : 0;
+
+      classMapping = { right: rIdx, left: lIdx, neutral: nIdx };
+    }
+
+    function buildConfidenceUI(labels) {
+      const container = document.getElementById('confidenceBars');
+      container.innerHTML = '';
+      labels.forEach((lbl, i) => {
+        const row = document.createElement('div');
+        row.innerHTML = `
+          <div class="flex justify-between text-slate-300 mb-0.5">
+            <span class="truncate max-w-[95px]">${lbl}</span>
+            <span id="prob-val-${i}" class="font-mono">0%</span>
+          </div>
+          <div class="w-full h-1.5 bg-slate-900 border border-slate-700 overflow-hidden">
+            <div id="prob-bar-${i}" class="h-full bg-sky-400" style="width: 0%"></div>
+          </div>
+        `;
+        container.appendChild(row);
+      });
+    }
+
+    function populateMappingSelectors(labels) {
+      const selects = [
+        { el: document.getElementById('mapRightSelect'), key: 'right' },
+        { el: document.getElementById('mapLeftSelect'), key: 'left' },
+        { el: document.getElementById('mapNeutralSelect'), key: 'neutral' }
+      ];
+      selects.forEach(s => {
+        s.el.innerHTML = '';
+        labels.forEach((lbl, idx) => {
+          const opt = document.createElement('option');
+          opt.value = idx;
+          opt.textContent = `${lbl} (מחלקה ${idx + 1})`;
+          if (classMapping[s.key] === idx) opt.selected = true;
+          s.el.appendChild(opt);
+        });
+      });
+    }
+
+    async function posePredictionLoop() {
+      if (isWebcamRunning && webcam && model) {
+        webcam.update();
+        await predictPose();
+      }
+      window.requestAnimationFrame(posePredictionLoop);
+    }
+
+    async function predictPose() {
+      try {
+        const { pose, posenetOutput } = await model.estimatePose(webcam.canvas);
+        const predictions = await model.predict(posenetOutput);
+
+        if (webcamCtx && webcam.canvas) {
+          webcamCtx.drawImage(webcam.canvas, 0, 0);
+          if (pose) {
+            tmPose.drawKeypoints(pose.keypoints, 0.5, webcamCtx);
+            tmPose.drawSkeleton(pose.keypoints, 0.5, webcamCtx);
+          }
+        }
+
+        let highestProb = 0;
+        let highestIdx = -1;
+
+        for (let i = 0; i < maxPredictions; i++) {
+          const prob = predictions[i].probability;
+          const pct = Math.round(prob * 100);
+          const valEl = document.getElementById(`prob-val-${i}`);
+          const barEl = document.getElementById(`prob-bar-${i}`);
+          if (valEl) valEl.textContent = `${pct}%`;
+          if (barEl) {
+            barEl.style.width = `${pct}%`;
+            barEl.className = prob >= CONFIDENCE_THRESHOLD ? "h-full bg-emerald-400" : "h-full bg-sky-500";
+          }
+
+          if (prob > highestProb) {
+            highestProb = prob;
+            highestIdx = i;
+          }
+        }
+
+        const labelEl = document.getElementById('detectedPoseLabel');
+        if (highestProb >= CONFIDENCE_THRESHOLD && highestIdx !== -1) {
+          labelEl.textContent = classLabels[highestIdx];
+          if (!keyboardMode && gameState === 'PLAYING') {
+            handlePoseAction(highestIdx);
+          }
+        } else {
+          labelEl.textContent = "...";
+        }
+      } catch (err) {}
+    }
+
+    // =========================================================================
+    // לוגיקת ירי וטעינת חץ
+    // =========================================================================
+    function handlePoseAction(detectedClassIdx) {
+      if (detectedClassIdx === classMapping.neutral) {
+        if (!isArrowLoaded) {
+          isArrowLoaded = true;
+          playSound('reload');
+          updateReloadHUD();
+          addFloatingText("RELOAD! 🏹", canvas.width / 2, getGroundY() - 125, "#34d399");
+        }
+      } else if (detectedClassIdx === classMapping.right) {
+        archerFacing = 'right';
+        if (isArrowLoaded) {
+          fireArrow('right');
+        }
+      } else if (detectedClassIdx === classMapping.left) {
+        archerFacing = 'left';
+        if (isArrowLoaded) {
+          fireArrow('left');
+        }
+      }
+    }
+
+    function fireArrow(direction) {
+      isArrowLoaded = false;
+      archerFacing = direction;
+      archerRecoil = 12;
+      playSound('shoot');
+      updateReloadHUD();
+
+      const centerX = canvas.width / 2;
+      const bowY = getGroundY() - 52;
+      const dirSign = direction === 'right' ? 1 : -1;
+
+      arrows.push({
+        x: centerX + dirSign * 36,
+        y: bowY,
+        vx: dirSign * 960,
+        direction: direction
+      });
+    }
+
+    function updateReloadHUD() {
+      const badge = document.getElementById('reloadBadge');
+      if (isArrowLoaded) {
+        badge.className = "px-4 py-2 font-extrabold text-xs sm:text-sm border-4 border-white shadow-[0_0_0_3px_#0b0d1a] bg-emerald-600 text-white";
+        badge.textContent = "🏹 חץ מוכן! הרם יד לירי";
+      } else {
+        badge.className = "px-4 py-2 font-extrabold text-xs sm:text-sm border-4 border-white shadow-[0_0_0_3px_#0b0d1a] bg-amber-600 text-white animate-pulse";
+        badge.textContent = "⬇️ הורד ידיים לטעינת חץ!";
+      }
+    }
+
+    window.addEventListener('keydown', (e) => {
+      if (gameState !== 'PLAYING') return;
+      if (!keyboardMode && isWebcamRunning) return;
+
+      if (e.key === 'ArrowRight') {
+        handlePoseAction(classMapping.right);
+      } else if (e.key === 'ArrowLeft') {
+        handlePoseAction(classMapping.left);
+      } else if (e.key === 'ArrowDown' || e.key === ' ') {
+        handlePoseAction(classMapping.neutral);
+      }
+    });
+
+    // =========================================================================
+    // לולאת המשחק הראשית
+    // =========================================================================
+    function getGroundY() {
+      return Math.floor((canvas.height * 0.78) / 4) * 4;
+    }
+
+    function startNewGame() {
+      score = 0;
+      dragonsKilled = 0;
+      level = 1;
+      lives = 3;
+      isArrowLoaded = true;
+      archerFacing = 'right';
+      arrows = [];
+      dragons = [];
+      particles = [];
+      floatingTexts = [];
+      spawnTimer = 1.0;
+
+      updateTopHUD();
+      updateReloadHUD();
+      document.getElementById('startOverlay').classList.add('hidden');
+      document.getElementById('gameOverOverlay').classList.add('hidden');
+
+      gameState = 'PLAYING';
+      lastTimestamp = performance.now();
+      requestAnimationFrame(gameLoop);
+    }
+
+    function updateTopHUD() {
+      document.getElementById('scoreDisplay').textContent = score;
+      document.getElementById('levelDisplay').textContent = level;
+      document.getElementById('heartsDisplay').textContent = '❤️'.repeat(Math.max(0, lives)) + '🖤'.repeat(Math.max(0, 3 - lives));
+    }
+
+    function spawnDragon() {
+      const side = Math.random() < 0.5 ? 'left' : 'right';
+      const groundY = getGroundY();
+      const baseSpeed = 120 + (level - 1) * 24 + Math.random() * 25;
+      const isPurpleDragon = level >= 3 && Math.random() < 0.38;
+
+      dragons.push({
+        x: side === 'left' ? -50 : canvas.width + 50,
+        y: groundY - 52,
+        side: side,
+        speed: baseSpeed,
+        animTimer: Math.random() * 0.5,
+        frame: 0,
+        scale: isPurpleDragon ? 5 : 4,
+        isPurple: isPurpleDragon
+      });
+    }
+
+    function createPixelExplosion(x, y, mainColor) {
+      for (let i = 0; i < 20; i++) {
+        const angle = Math.random() * Math.PI * 2;
+        const speed = Math.random() * 250 + 60;
+        particles.push({
+          x: x,
+          y: y,
+          vx: Math.cos(angle) * speed,
+          vy: Math.sin(angle) * speed - 80,
+          life: 1.0,
+          decay: Math.random() * 1.4 + 1.1,
+          size: Math.random() > 0.5 ? 8 : 4,
+          color: i % 2 === 0 ? mainColor : '#facc15'
+        });
+      }
+    }
+
+    function addFloatingText(text, x, y, color) {
+      floatingTexts.push({
+        text: text,
+        x: x,
+        y: y,
+        vy: -50,
+        life: 1.0,
+        color: color
+      });
+    }
+
+    function gameLoop(timestamp) {
+      if (gameState !== 'PLAYING') return;
+
+      const dt = Math.min((timestamp - lastTimestamp) / 1000, 0.05);
+      lastTimestamp = timestamp;
+
+      updateGame(dt);
+      drawGame();
+
+      requestAnimationFrame(gameLoop);
+    }
+
+    function updateGame(dt) {
+      const centerX = canvas.width / 2;
+      level = Math.floor(score / 50) + 1;
+
+      spawnTimer -= dt;
+      if (spawnTimer <= 0) {
+        spawnDragon();
+        const minInterval = Math.max(0.95, 2.6 - (level - 1) * 0.24);
+        const maxInterval = Math.max(1.4, 3.5 - (level - 1) * 0.28);
+        spawnTimer = minInterval + Math.random() * (maxInterval - minInterval);
+      }
+
+      if (archerRecoil > 0) archerRecoil = Math.max(0, archerRecoil - dt * 48);
+      if (screenShake > 0) screenShake = Math.max(0, screenShake - dt * 40);
+      if (damageFlash > 0) damageFlash = Math.max(0, damageFlash - dt * 2.5);
+
+      for (let i = arrows.length - 1; i >= 0; i--) {
+        const a = arrows[i];
+        a.x += a.vx * dt;
+        if (a.x < -80 || a.x > canvas.width + 80) {
+          arrows.splice(i, 1);
+        }
+      }
+
+      for (let i = dragons.length - 1; i >= 0; i--) {
+        const d = dragons[i];
+        d.animTimer += dt;
+        if (d.animTimer >= 0.16) {
+          d.animTimer = 0;
+          d.frame = d.frame === 0 ? 1 : 0;
+        }
+
+        if (d.side === 'left') {
+          d.x += d.speed * dt;
+        } else {
+          d.x -= d.speed * dt;
+        }
+
+        // בדיקת פגיעה מחץ
+        let hitByArrow = false;
+        for (let j = arrows.length - 1; j >= 0; j--) {
+          const a = arrows[j];
+          if (Math.abs(a.x - d.x) < 46 && Math.abs(a.y - d.y) < 42) {
+            hitByArrow = true;
+            arrows.splice(j, 1);
+            break;
+          }
+        }
+
+        if (hitByArrow) {
+          score += 10;
+          dragonsKilled += 1;
+          screenShake = 8;
+          playSound('hit');
+          createPixelExplosion(d.x, d.y, d.isPurple ? '#7c3aed' : '#ef4444');
+          addFloatingText("+10!", d.x, d.y - 34, "#facc15");
+          dragons.splice(i, 1);
+          updateTopHUD();
+          continue;
+        }
+
+        // פגיעה במגדל הקשת שבמרכז
+        if (Math.abs(d.x - centerX) < 44) {
+          lives -= 1;
+          screenShake = 16;
+          damageFlash = 0.65;
+          playSound('hurt');
+          createPixelExplosion(d.x, d.y, '#ef4444');
+          addFloatingText("-1 ❤️", centerX, getGroundY() - 120, "#f87171");
+          dragons.splice(i, 1);
+          updateTopHUD();
+
+          if (lives <= 0) {
+            triggerGameOver();
+            return;
+          }
+        }
+      }
+
+      for (let i = particles.length - 1; i >= 0; i--) {
+        const p = particles[i];
+        p.x += p.vx * dt;
+        p.y += p.vy * dt;
+        p.vy += 420 * dt;
+        p.life -= p.decay * dt;
+        if (p.life <= 0) particles.splice(i, 1);
+      }
+
+      for (let i = floatingTexts.length - 1; i >= 0; i--) {
+        const ft = floatingTexts[i];
+        ft.y += ft.vy * dt;
+        ft.life -= dt * 1.1;
+        if (ft.life <= 0) floatingTexts.splice(i, 1);
+      }
+    }
+
+    function triggerGameOver() {
+      gameState = 'GAMEOVER';
+      document.getElementById('finalScore').textContent = score;
+      document.getElementById('finalKills').textContent = dragonsKilled;
+      document.getElementById('gameOverOverlay').classList.remove('hidden');
+    }
+
+    // =========================================================================
+    // ציור עולם Pixel Art 16-ביט על הקנבס
+    // =========================================================================
+    function drawGame() {
+      const w = canvas.width;
+      const h = canvas.height;
+      const groundY = getGroundY();
+      const centerX = Math.floor(w / 2);
+
+      ctx.imageSmoothingEnabled = false;
+      ctx.save();
+
+      if (screenShake > 0) {
+        const dx = Math.round(((Math.random() - 0.5) * screenShake) / 4) * 4;
+        const dy = Math.round(((Math.random() - 0.5) * screenShake) / 4) * 4;
+        ctx.translate(dx, dy);
+      }
+
+      // 1. שמיים מפוקסלים בגווני לילה כחולים-סגולים (פסי גובה 16-ביט)
+      const skyBands = ['#0f172a', '#17203d', '#1e2952', '#28356b', '#334385'];
+      const bandH = Math.ceil(groundY / skyBands.length);
+      skyBands.forEach((col, idx) => {
+        ctx.fillStyle = col;
+        ctx.fillRect(0, idx * bandH, w, bandH);
+      });
+
+      // כוכבי פיקסל מרובעים
+      ctx.fillStyle = '#fef08a';
+      pixelStars.forEach(s => {
+        ctx.fillRect(s.x, s.y, s.size, s.size);
+      });
+
+      // ירח פיקסל מרובע בפינה הימנית העליונה
+      const moonX = Math.floor((w * 0.84) / 4) * 4;
+      const moonY = Math.floor((h * 0.22) / 4) * 4;
+      ctx.fillStyle = '#fef3c7';
+      ctx.fillRect(moonX - 24, moonY - 24, 48, 48);
+      ctx.fillStyle = '#fde68a';
+      ctx.fillRect(moonX - 28, moonY - 16, 56, 32);
+      ctx.fillRect(moonX - 16, moonY - 28, 32, 56);
+      // מכתשי ירח
+      ctx.fillStyle = '#f59e0b';
+      ctx.fillRect(moonX - 12, moonY - 8, 8, 8);
+      ctx.fillRect(moonX + 8, moonY + 4, 8, 8);
+
+      // ענני פיקסל
+      pixelClouds.forEach(cl => {
+        const cx = Math.floor(cl.x / 4) * 4;
+        const cy = Math.floor(cl.y / 4) * 4;
+        ctx.fillStyle = '#3b4d8a';
+        ctx.fillRect(cx - 32, cy, 64, 16);
+        ctx.fillRect(cx - 20, cy - 12, 40, 12);
+        ctx.fillRect(cx - 8, cy - 20, 20, 8);
+      });
+
+      // 2. הרי פיקסל מדורגים ברקע
+      drawPixelMountain(w * 0.14, groundY, 140, '#161d38');
+      drawPixelMountain(w * 0.48, groundY, 175, '#121830');
+      drawPixelMountain(w * 0.82, groundY, 150, '#161d38');
+
+      // 3. קרקע ואדמת פיקסל ארט
+      ctx.fillStyle = '#14532d';
+      ctx.fillRect(0, groundY, w, h - groundY);
+
+      // שכבת דשא עליונה
+      ctx.fillStyle = '#22c55e';
+      ctx.fillRect(0, groundY, w, 12);
+      ctx.fillStyle = '#16a34a';
+      ctx.fillRect(0, groundY + 12, w, 12);
+
+      // שיני דשא מפוקסלות לכל הרוחב
+      ctx.fillStyle = '#16a34a';
+      for (let gx = 0; gx < w; gx += 24) {
+        ctx.fillRect(gx, groundY + 24, 12, 8);
+      }
+
+      // קוביות אדמה חומות מתחת לדשא
+      ctx.fillStyle = '#451a03';
+      ctx.fillRect(0, groundY + 36, w, h - groundY - 36);
+      ctx.fillStyle = '#78350f';
+      for (let bx = 8; bx < w; bx += 48) {
+        ctx.fillRect(bx, groundY + 48, 16, 12);
+        ctx.fillRect(bx + 24, groundY + 72, 16, 12);
+      }
+
+      // 4. צריח/מגדל אבן מפוקסל במרכז שעליו עומד הקשת
+      drawPixelTower(centerX, groundY);
+
+      // 5. הקשת החמוד + קשת וחץ
+      drawPixelArcher(centerX, groundY - 24);
+
+      // חיווי פיקסל קטן מעל הקשת שמראה אם החץ טעון או צריך להוריד ידיים
+      drawArcherStatusIndicator(centerX, groundY - 106);
+
+      // 6. חיצים באוויר
+      arrows.forEach(a => drawPixelArrow(a));
+
+      // 7. דרקונים מפחידים
+      dragons.forEach(d => drawPixelDragon(d));
+
+      // 8. חלקיקים מרובעים
+      particles.forEach(p => {
+        ctx.globalAlpha = Math.max(0, p.life);
+        ctx.fillStyle = p.color;
+        ctx.fillRect(Math.round(p.x / 4) * 4, Math.round(p.y / 4) * 4, p.size, p.size);
+      });
+      ctx.globalAlpha = 1.0;
+
+      // 9. טקסטים מרחפים
+      floatingTexts.forEach(ft => {
+        ctx.globalAlpha = Math.max(0, ft.life);
+        ctx.font = '900 18px Rubik, sans-serif';
+        ctx.textAlign = 'center';
+        ctx.fillStyle = '#0b0d1a';
+        ctx.fillText(ft.text, ft.x + 2, ft.y + 2);
+        ctx.fillStyle = ft.color;
+        ctx.fillText(ft.text, ft.x, ft.y);
+      });
+      ctx.globalAlpha = 1.0;
+
+      if (damageFlash > 0) {
+        ctx.fillStyle = `rgba(239, 68, 68, ${damageFlash * 0.45})`;
+        ctx.fillRect(0, 0, w, h);
+      }
+
+      ctx.restore();
+    }
+
+    function drawPixelMountain(cx, groundY, height, color) {
+      ctx.fillStyle = color;
+      const step = 12;
+      for (let y = 0; y < height; y += step) {
+        const halfWidth = Math.floor(((y + step) * 1.1) / 4) * 4;
+        ctx.fillRect(Math.floor(cx / 4) * 4 - halfWidth, groundY - height + y, halfWidth * 2, step);
+      }
+    }
+
+    function drawPixelTower(cx, groundY) {
+      // בסיס אבן
+      ctx.fillStyle = '#475569';
+      ctx.fillRect(cx - 44, groundY - 24, 88, 24);
+      // שיני חומה (Battlements)
+      ctx.fillStyle = '#64748b';
+      ctx.fillRect(cx - 48, groundY - 32, 16, 12);
+      ctx.fillRect(cx - 8, groundY - 32, 16, 12);
+      ctx.fillRect(cx + 32, groundY - 32, 16, 12);
+      // קווי לבנים כהים
+      ctx.fillStyle = '#1e293b';
+      ctx.fillRect(cx - 44, groundY - 12, 88, 4);
+      ctx.fillRect(cx - 16, groundY - 24, 4, 12);
+      ctx.fillRect(cx + 16, groundY - 12, 4, 12);
+    }
+
+    function drawPixelArcher(cx, feetY) {
+      const flip = archerFacing === 'left';
+      const dir = flip ? -1 : 1;
+
+      // גוף הקשת החמוד
+      drawPixelMatrix(ctx, ARCHER_SPRITE, cx, feetY - 32, PIXEL_SCALE, flip);
+
+      // קשת עץ מפוקסלת ביד
+      const bowX = cx + dir * (24 - Math.round(archerRecoil * 0.5));
+      const bowY = feetY - 28;
+
+      ctx.fillStyle = '#b45309';
+      ctx.fillRect(bowX, bowY - 20, 4, 40);
+      ctx.fillRect(bowX - dir * 4, bowY - 24, 4, 4);
+      ctx.fillRect(bowX - dir * 4, bowY + 20, 4, 4);
+
+      // מיתר הקשת
+      ctx.fillStyle = '#e2e8f0';
+      if (isArrowLoaded) {
+        // מיתר מתוח לאחור
+        ctx.fillRect(bowX - dir * 8, bowY - 16, 4, 32);
+        // חץ טעון זוהר על הקשת
+        ctx.fillStyle = '#fde047';
+        ctx.fillRect(bowX - dir * 8, bowY - 2, dir * 28, 4);
+        ctx.fillStyle = '#38bdf8';
+        ctx.fillRect(bowX + dir * 20, bowY - 6, dir * 8, 12);
+      } else {
+        ctx.fillRect(bowX - dir * 4, bowY - 20, 4, 40);
+      }
+    }
+
+    function drawArcherStatusIndicator(cx, topY) {
+      ctx.save();
+      ctx.font = '800 12px Rubik, sans-serif';
+      ctx.textAlign = 'center';
+      if (isArrowLoaded) {
+        ctx.fillStyle = '#34d399';
+        ctx.fillText('🏹 מוכן', cx, topY);
+      } else {
+        ctx.fillStyle = '#fbbf24';
+        ctx.fillText('⬇️ הורד ידיים', cx, topY);
+      }
+      ctx.restore();
+    }
+
+    function drawPixelArrow(a) {
+      const dir = a.direction === 'right' ? 1 : -1;
+      const x = Math.round(a.x / 4) * 4;
+      const y = Math.round(a.y / 4) * 4;
+
+      // שובל אור מפוקסל
+      ctx.fillStyle = 'rgba(56, 189, 248, 0.45)';
+      ctx.fillRect(x - dir * 44, y - 2, dir * 24, 4);
+
+      // נוצות זנב אדומות
+      ctx.fillStyle = '#f43f5e';
+      ctx.fillRect(x - dir * 24, y - 6, dir * 8, 12);
+
+      // גוף החץ צהוב
+      ctx.fillStyle = '#fde047';
+      ctx.fillRect(x - dir * 16, y - 2, dir * 32, 4);
+
+      // ראש חץ כחול-לבן חד
+      ctx.fillStyle = '#38bdf8';
+      ctx.fillRect(x + dir * 16, y - 6, dir * 8, 12);
+      ctx.fillStyle = '#ffffff';
+      ctx.fillRect(x + dir * 24, y - 2, dir * 4, 4);
+    }
+
+    function drawPixelDragon(d) {
+      const sprite = d.frame === 0 ? DRAGON_FRAME_1 : DRAGON_FRAME_2;
+      const flip = d.side === 'right'; // אם מגיע מימין, פונה שמאלה
+      const purpleOverride = d.isPurple
+        ? { 'R': '#7c3aed', 'M': '#5b21b6', 'L': '#ddd6fe' }
+        : null;
+
+      drawPixelMatrix(ctx, sprite, d.x, d.y, d.scale, flip, purpleOverride);
+    }
+
+    // =========================================================================
+    // כפתורים ואירועים
+    // =========================================================================
+    document.getElementById('startBtn').addEventListener('click', async () => {
+      initAudio();
+      const btn = document.getElementById('startBtn');
+      const loadMsg = document.getElementById('loadingMessage');
+      const errMsg = document.getElementById('errorMessage');
+
+      btn.disabled = true;
+      btn.classList.add('opacity-50');
+      loadMsg.classList.remove('hidden');
+      errMsg.classList.add('hidden');
+
+      try {
+        if (!isWebcamRunning) {
+          await initTeachableMachine();
+        }
+        keyboardMode = false;
+        document.getElementById('keyboardModeBtn').textContent = '⌨️ מקלדת: כבוי';
+        startNewGame();
+      } catch (error) {
+        console.error(error);
+        btn.disabled = false;
+        btn.classList.remove('opacity-50');
+        loadMsg.classList.add('hidden');
+        errMsg.textContent = "לא הצלחנו לגשת למצלמה או למודל. ודא שאישרת מצלמה, או לחץ על 'שחק עם מקלדת' לבדיקה מיידית.";
+        errMsg.classList.remove('hidden');
+      }
+    });
+
+    document.getElementById('startKeyboardBtn').addEventListener('click', () => {
+      initAudio();
+      keyboardMode = true;
+      document.getElementById('keyboardModeBtn').textContent = '⌨️ מקלדת: פעיל';
+      document.getElementById('aiStatusText').textContent = 'מקלדת';
+      startNewGame();
+    });
+
+    document.getElementById('restartBtn').addEventListener('click', () => {
+      initAudio();
+      startNewGame();
+    });
+
+    document.getElementById('keyboardModeBtn').addEventListener('click', () => {
+      keyboardMode = !keyboardMode;
+      document.getElementById('keyboardModeBtn').textContent = keyboardMode
+        ? '⌨️ מקלדת: פעיל'
+        : '⌨️ מקלדת: כבוי';
+    });
+
+    document.getElementById('muteBtn').addEventListener('click', () => {
+      isMuted = !isMuted;
+      document.getElementById('muteBtn').textContent = isMuted ? '🔇' : '🔊';
+    });
+
+    document.getElementById('toggleMappingBtn').addEventListener('click', () => {
+      if (classLabels.length === 0) {
+        classLabels = ['מחלקה 1', 'מחלקה 2', 'מחלקה 3'];
+        populateMappingSelectors(classLabels);
+      }
+      document.getElementById('mappingModal').classList.remove('hidden');
+    });
+
+    document.getElementById('closeMappingBtn').addEventListener('click', () => {
+      classMapping.right = parseInt(document.getElementById('mapRightSelect').value, 10);
+      classMapping.left = parseInt(document.getElementById('mapLeftSelect').value, 10);
+      classMapping.neutral = parseInt(document.getElementById('mapNeutralSelect').value, 10);
+      document.getElementById('mappingModal').classList.add('hidden');
+    });
+
+    // ציור ראשוני של עולם הפיקסל ארט
+    drawGame();
+  </script>
+</body>
+</html>
